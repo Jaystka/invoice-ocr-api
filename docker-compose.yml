@@ -1,0 +1,15 @@
+services:
+  invoice-ocr-api:
+    build: .
+    container_name: invoice-ocr-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      # Cache model PaddleOCR agar tidak download ulang setelah container dibuat ulang.
+      - paddle-models:/root/.paddlex
+
+volumes:
+  paddle-models:
