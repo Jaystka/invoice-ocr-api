@@ -4,8 +4,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Invoice OCR API"
-    app_version: str = "0.1.0"
+    app_name: str = "Invoice & Payment Proof Validation API"
+    app_version: str = "0.2.0"
     api_prefix: str = "/api/v1"
 
     max_file_mb: int = 15
@@ -20,8 +20,14 @@ class Settings(BaseSettings):
     default_tolerance_amount: int = 100
     default_tolerance_percent: float = 0.01
 
+    # Minimum scores for content-level payment validation.
+    payment_valid_score: float = 0.85
+    payment_review_score: float = 0.65
+    minimum_name_similarity: float = 0.72
+
     model_config = SettingsConfigDict(
         env_file=".env",
+        # Kept for backwards compatibility with the v0.1 project.
         env_prefix="INVOICE_",
         case_sensitive=False,
     )

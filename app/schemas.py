@@ -20,6 +20,22 @@ class InvoiceFields(BaseModel):
     grand_total: FieldValue
 
 
+class TransferFields(BaseModel):
+    transfer_status: FieldValue
+    amount: FieldValue
+    currency: FieldValue
+    transaction_date: FieldValue
+    transaction_time: FieldValue
+    source_bank: FieldValue
+    source_account: FieldValue
+    source_name: FieldValue
+    destination_bank: FieldValue
+    destination_account: FieldValue
+    destination_name: FieldValue
+    reference_number: FieldValue
+    channel: FieldValue
+
+
 class OCRMeta(BaseModel):
     engine: str
     confidence: float = Field(ge=0.0, le=1.0)
@@ -33,7 +49,7 @@ class ValidationResult(BaseModel):
     arithmetic_ok: bool | None = None
     calculated_total: int | None = None
     difference: int | None = None
-    warnings: list[str] = []
+    warnings: list[str] = Field(default_factory=list)
 
 
 class MatchResult(BaseModel):
@@ -51,6 +67,24 @@ class MatchResult(BaseModel):
     score: float | None = None
 
 
+class ValidationCheck(BaseModel):
+    name: str
+    status: Literal["pass", "warning", "fail", "not_checked"]
+    expected: str | int | float | None = None
+    actual: str | int | float | None = None
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    message: str | None = None
+
+
+class PaymentValidationResult(BaseModel):
+    status: Literal["valid", "review", "invalid"]
+    score: float = Field(ge=0.0, le=1.0)
+    checks: list[ValidationCheck] = Field(default_factory=list)
+    risk_flags: list[str] = Field(default_factory=list)
+    # Important: OCR validates document content consistency, not bank authenticity.
+    verification_scope: Literal["content_consistency_only"] = "content_consistency_only"
+
+
 class DocumentInfo(BaseModel):
     filename: str
     content_type: str | None = None
@@ -66,6 +100,38 @@ class AnalyzeResponse(BaseModel):
     match: MatchResult
     raw_text: str
     lines: list[str]
+
+
+class PaymentAnalyzeResponse(BaseModel):
+    document: DocumentInfo
+    ocr: OCRMeta
+    payment: TransferFields
+    validation: PaymentValidationResult
+    raw_text: str
+    lines: list[str]
+
+
+class ReconciliationResult(BaseModel):
+    status: Literal["matched", "review", "mismatch", "insufficient_data"]
+    score: float = Field(ge=0.0, le=1.0)
+    invoice_total: int | None = None
+    paid_amount: int | None = None
+    difference: int | None = None
+    invoice_number: str | None = None
+    payment_reference: str | None = None
+    checks: list[ValidationCheck] = Field(default_factory=list)
+
+
+class ReconciliationResponse(BaseModel):
+    invoice_document: DocumentInfo
+    payment_document: DocumentInfo
+    invoice_ocr: OCRMeta
+    payment_ocr: OCRMeta
+    invoice: InvoiceFields
+    payment: TransferFields
+    invoice_validation: ValidationResult
+    payment_validation: PaymentValidationResult
+    reconciliation: ReconciliationResult
 
 
 class HealthResponse(BaseModel):

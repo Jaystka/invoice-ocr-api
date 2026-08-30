@@ -1,18 +1,88 @@
-# Invoice OCR API
+# Invoice & Payment Proof Validation API
 
-MVP backend service untuk membaca invoice dari JPG/PNG/WEBP/PDF.
+Self-hosted backend service untuk:
 
-## Pipeline
+1. membaca invoice dari PDF/gambar,
+2. membaca bukti transfer dari PDF/gambar,
+3. mencocokkan nominal dengan data aplikasi,
+4. memvalidasi rekening/nama/bank tujuan,
+5. merekonsiliasi invoice dengan bukti pembayaran.
 
-1. Upload file.
-2. PDF digital: ambil text layer langsung.
-3. PDF scan/image: OCR dengan PaddleOCR.
-4. Jika PaddleOCR gagal / confidence rendah: fallback Tesseract.
-5. Normalisasi invoice number, tanggal, currency, subtotal, pajak, diskon, total.
-6. Validasi `subtotal + tax - discount == grand_total`.
-7. Jika `expected_total` dikirim, lakukan exact/tolerance matching.
+OCR utama menggunakan **PaddleOCR**, dengan **Tesseract** sebagai fallback.
 
-## Jalankan dengan Docker
+> Penting: service ini melakukan **validasi konsistensi isi dokumen**. Screenshot/PDF yang terlihat valid melalui OCR belum membuktikan bahwa transaksi benar-benar terjadi. Untuk validasi finansial final, integrasikan hasil dengan mutasi bank, payment gateway, virtual account callback, atau bank API.
+
+## Architecture
+
+```text
+Invoice / Payment Proof
+        |
+        v
+File + PDF Inspector
+        |
+   +----+------+
+   |           |
+PDF text     Image/scan
+   |           |
+   |       PaddleOCR
+   |           |
+   |     low confidence/error
+   |           |
+   |       Tesseract
+   +-----+-----+
+         |
+         v
+Normalization / Parsing
+   |                |
+ Invoice Parser   Transfer Parser
+   |                |
+   v                v
+Invoice Validation Payment Validation
+         \          /
+          \        /
+           v      v
+          Reconciliation
+```
+
+## Extracted payment fields
+
+- transfer status
+- amount
+- currency
+- transaction date
+- transaction time
+- source bank
+- source account
+- source name
+- destination bank
+- destination account
+- destination name
+- reference number
+- transfer channel (BI-FAST / RTGS / SKN / QRIS / etc.)
+
+## Payment validation checks
+
+The API can validate:
+
+- transfer status is successful,
+- amount matches expected bill,
+- recipient name similarity,
+- destination account exact or masked-suffix match,
+- destination bank,
+- optional transaction reference,
+- presence of date/reference evidence.
+
+The response includes:
+
+```text
+valid
+review
+invalid
+```
+
+plus per-check explanations and risk flags.
+
+## Run
 
 ```bash
 cp .env.example .env
@@ -25,16 +95,7 @@ Swagger:
 http://localhost:8000/docs
 ```
 
-Health:
-
-```bash
-curl http://localhost:8000/health
-```
-
-> Pada pemanggilan PaddleOCR pertama, model OCR dapat diunduh otomatis.
-> Volume `paddle-models` menjaga cache model tetap ada.
-
-## Analyze invoice
+## 1. Analyze invoice
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/invoices/analyze \
@@ -43,118 +104,113 @@ curl -X POST http://localhost:8000/api/v1/invoices/analyze \
   -F "engine=auto"
 ```
 
-Engine tersedia:
-
-- `auto` - PaddleOCR utama, Tesseract fallback
-- `paddle`
-- `tesseract`
-
-Matching tolerance opsional:
+## 2. Analyze payment proof
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/invoices/analyze \
-  -F "file=@invoice.jpg" \
-  -F "expected_total=10000000" \
-  -F "tolerance_amount=100" \
-  -F "tolerance_percent=0.01"
+curl -X POST http://localhost:8000/api/v1/payments/analyze \
+  -F "file=@bukti-transfer.jpg" \
+  -F "expected_amount=1387500" \
+  -F "expected_recipient_name=PT Contoh Indonesia" \
+  -F "expected_recipient_account=12345678901234" \
+  -F "expected_recipient_bank=BCA" \
+  -F "engine=auto"
 ```
 
-## Contoh response
+Example result:
 
 ```json
 {
-  "document": {
-    "filename": "invoice.pdf",
-    "content_type": "application/pdf",
-    "size_bytes": 201442,
-    "sha256": "..."
-  },
-  "ocr": {
-    "engine": "paddleocr",
-    "confidence": 0.9421,
-    "page_count": 1,
-    "source_type": "pdf_scanned",
-    "fallback_used": false
-  },
-  "invoice": {
-    "invoice_number": {
-      "value": "INV-2026-00129",
-      "confidence": 0.94,
-      "source_text": "INVOICE NO: INV-2026-00129"
+  "payment": {
+    "transfer_status": {
+      "value": "success",
+      "confidence": 0.96
     },
-    "invoice_date": {
-      "value": "2026-08-30",
-      "confidence": 0.92,
-      "source_text": "30 Agustus 2026"
-    },
-    "vendor_name": {
-      "value": "PT CONTOH INDONESIA",
-      "confidence": 0.82,
-      "source_text": "PT CONTOH INDONESIA"
-    },
-    "currency": {
-      "value": "IDR",
-      "confidence": 0.95,
-      "source_text": "Rp"
-    },
-    "subtotal": {
-      "value": 1250000,
-      "confidence": 0.98,
-      "source_text": "Subtotal Rp 1.250.000"
-    },
-    "tax": {
-      "value": 137500,
-      "confidence": 0.98,
-      "source_text": "PPN Rp 137.500"
-    },
-    "discount": {
-      "value": null,
-      "confidence": 0,
-      "source_text": null
-    },
-    "grand_total": {
+    "amount": {
       "value": 1387500,
-      "confidence": 0.98,
-      "source_text": "Grand Total Rp 1.387.500"
+      "confidence": 0.98
+    },
+    "destination_bank": {
+      "value": "BCA",
+      "confidence": 0.95
+    },
+    "destination_account": {
+      "value": "****1234",
+      "confidence": 0.95
+    },
+    "destination_name": {
+      "value": "PT CONTOH INDONESIA",
+      "confidence": 0.95
+    },
+    "reference_number": {
+      "value": "TRX20260830123456",
+      "confidence": 0.95
     }
   },
   "validation": {
     "status": "valid",
-    "arithmetic_ok": true,
-    "calculated_total": 1387500,
-    "difference": 0,
-    "warnings": []
-  },
-  "match": {
-    "status": "exact_match",
-    "expected_total": 1387500,
-    "invoice_total": 1387500,
-    "difference": 0,
-    "tolerance_used": 0,
-    "score": 1
-  },
-  "raw_text": "...",
-  "lines": []
+    "score": 0.98,
+    "risk_flags": [],
+    "verification_scope": "content_consistency_only"
+  }
 }
 ```
 
-## Catatan MVP
+## 3. Invoice + payment reconciliation
 
-Parser saat ini rule-based. Ini sengaja agar:
+```bash
+curl -X POST http://localhost:8000/api/v1/reconciliation/validate \
+  -F "invoice_file=@invoice.pdf" \
+  -F "payment_file=@bukti-transfer.jpg" \
+  -F "expected_recipient_name=PT Contoh Indonesia" \
+  -F "expected_recipient_account=12345678901234" \
+  -F "expected_recipient_bank=BCA"
+```
 
-- self-hosted,
-- tidak memerlukan LLM,
-- hasil dapat diaudit,
-- source text setiap field terlihat,
-- mudah menambah template/rule vendor tertentu.
+Possible status:
 
-Tahap berikutnya yang ideal:
+```text
+matched
+review
+mismatch
+insufficient_data
+```
 
-1. persistence PostgreSQL untuk dokumen/extraction/match,
-2. API key per aplikasi pemanggil,
-3. duplicate detection berdasarkan SHA-256 + invoice number,
-4. queue worker untuk batch PDF,
-5. callback/webhook,
-6. vendor-specific parsing rules,
-7. line item/table extraction,
-8. review dashboard untuk confidence rendah.
+## Recommended integration flow
+
+```text
+Aplikasi utama
+    |
+    | transaction_id + expected amount/account
+    v
+Invoice & Payment Validation API
+    |
+    +--> parse invoice
+    +--> parse proof
+    +--> validate payment content
+    +--> reconcile amount
+    |
+    v
+matched / review / mismatch
+```
+
+Do **not** auto-settle a high-value transaction solely from OCR. Recommended production states:
+
+```text
+OCR_VALID
+BANK_PENDING
+BANK_CONFIRMED
+REVIEW_REQUIRED
+REJECTED
+```
+
+For stronger production validation, the next layer should add:
+
+- PostgreSQL audit history,
+- duplicate proof detection using SHA-256 + reference number,
+- API key per caller app,
+- bank/account master data,
+- webhook callback,
+- asynchronous worker for batch processing,
+- mutation/payment-gateway verification,
+- manual review dashboard,
+- cropped evidence regions for each extracted field.
