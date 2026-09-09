@@ -138,3 +138,105 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     service: str
     version: str
+
+
+AnnotationStatus = Literal["draft", "reviewed", "approved", "rejected"]
+
+
+class BoundingBox(BaseModel):
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+
+
+class InvoiceAnnotation(BaseModel):
+    id: str
+    invoice_id: str
+    page: int = Field(ge=1)
+    label: str
+    bbox: BoundingBox
+    text: str | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    engine: str | None = None
+    source: Literal["manual", "ocr_crop", "auto_suggest"] = "manual"
+    status: AnnotationStatus = "draft"
+    created_at: str
+    updated_at: str
+
+
+class InvoiceAnnotationCreate(BaseModel):
+    page: int = Field(ge=1)
+    label: str
+    bbox: BoundingBox
+    text: str | None = None
+    source: Literal["manual", "ocr_crop", "auto_suggest"] = "manual"
+    status: AnnotationStatus = "draft"
+
+
+class InvoiceAnnotationUpdate(BaseModel):
+    page: int | None = Field(default=None, ge=1)
+    label: str | None = None
+    bbox: BoundingBox | None = None
+    text: str | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    engine: str | None = None
+    source: Literal["manual", "ocr_crop", "auto_suggest"] | None = None
+    status: AnnotationStatus | None = None
+
+
+class OCRCropRequest(BaseModel):
+    page: int = Field(ge=1)
+    bbox: BoundingBox
+    engine: Literal["auto", "paddle", "tesseract"] = "auto"
+
+
+class OCRCropResponse(BaseModel):
+    text: str
+    lines: list[str]
+    confidence: float = Field(ge=0.0, le=1.0)
+    engine: str
+    fallback_used: bool = False
+
+
+class AnnotationPage(BaseModel):
+    page: int
+    width: int
+    height: int
+    image_url: str
+
+
+class AnnotationDocument(BaseModel):
+    id: str
+    filename: str
+    content_type: str | None = None
+    size_bytes: int
+    sha256: str
+    page_count: int
+    status: AnnotationStatus = "draft"
+    created_at: str
+    updated_at: str
+    pages: list[AnnotationPage]
+    annotations: list[InvoiceAnnotation] = Field(default_factory=list)
+
+
+class AnnotationDocumentSummary(BaseModel):
+    id: str
+    filename: str
+    content_type: str | None = None
+    size_bytes: int
+    sha256: str
+    page_count: int
+    status: AnnotationStatus
+    annotation_count: int
+    approved_annotation_count: int
+    created_at: str
+    updated_at: str
+
+
+class DatasetExport(BaseModel):
+    dataset_version: str
+    generated_at: str
+    invoice_count: int
+    annotation_count: int
+    documents: list[AnnotationDocument]

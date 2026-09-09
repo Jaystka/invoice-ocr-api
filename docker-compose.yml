@@ -10,6 +10,8 @@ services:
     volumes:
       # Cache model PaddleOCR agar tidak download ulang setelah container dibuat ulang.
       - paddle-models:/root/.paddlex
+      # Simpan dokumen training, page preview, dan annotation JSON di host.
+      - ./data:/app/data
 
 volumes:
   paddle-models:

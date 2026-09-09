@@ -95,6 +95,12 @@ Swagger:
 http://localhost:8000/docs
 ```
 
+Bounding box training interface:
+
+```text
+http://localhost:8000/training
+```
+
 ## 1. Analyze invoice
 
 ```bash
@@ -173,6 +179,107 @@ matched
 review
 mismatch
 insufficient_data
+```
+
+## 4. Bounding box training workflow
+
+Interface `/training` menyediakan MVP human-in-the-loop untuk membuat dataset
+training dari invoice:
+
+1. upload invoice PDF/gambar,
+2. gambar bounding box pada field yang penting,
+3. pilih label field,
+4. jalankan OCR khusus area crop,
+5. koreksi teks jika perlu,
+6. simpan annotation,
+7. approve annotation/document,
+8. export dataset approved.
+
+Label default yang tersedia di UI:
+
+- `invoice_number`
+- `invoice_date`
+- `vendor_name`
+- `tax_number`
+- `subtotal`
+- `tax_amount`
+- `discount`
+- `total_amount`
+- `due_date`
+- `currency`
+- `line_items`
+
+Storage default menggunakan file lokal di `data/annotations`. Pada Docker
+Compose, folder ini dipersist ke host melalui volume `./data:/app/data`.
+
+Upload invoice training:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/training/invoices \
+  -F "file=@invoice.pdf"
+```
+
+Simpan annotation:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/training/invoices/{invoice_id}/annotations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "page": 1,
+    "label": "invoice_number",
+    "bbox": {"x": 812, "y": 143, "width": 210, "height": 42},
+    "text": "INV-2026-0091",
+    "status": "approved"
+  }'
+```
+
+OCR area crop:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/training/invoices/{invoice_id}/ocr-crop \
+  -H "Content-Type: application/json" \
+  -d '{
+    "page": 1,
+    "bbox": {"x": 812, "y": 143, "width": 210, "height": 42},
+    "engine": "auto"
+  }'
+```
+
+Export dataset:
+
+```bash
+curl "http://localhost:8000/api/v1/training/dataset/export?approved_only=true"
+```
+
+Format dataset berisi dokumen, halaman render, dan annotation:
+
+```json
+{
+  "dataset_version": "dataset_20260909030000",
+  "invoice_count": 1,
+  "annotation_count": 1,
+  "documents": [
+    {
+      "id": "invoice_id",
+      "pages": [
+        {
+          "page": 1,
+          "width": 1654,
+          "height": 2339,
+          "image_url": "/api/v1/training/invoices/invoice_id/pages/1.png"
+        }
+      ],
+      "annotations": [
+        {
+          "label": "invoice_number",
+          "bbox": {"x": 812, "y": 143, "width": 210, "height": 42},
+          "text": "INV-2026-0091",
+          "status": "approved"
+        }
+      ]
+    }
+  ]
+}
 ```
 
 ## Recommended integration flow
