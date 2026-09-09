@@ -95,7 +95,7 @@ Swagger:
 http://localhost:8000/docs
 ```
 
-Bounding box training interface:
+Bounding box training interface untuk invoice dan payment proof:
 
 ```text
 http://localhost:8000/training
@@ -184,7 +184,7 @@ insufficient_data
 ## 4. Bounding box training workflow
 
 Interface `/training` menyediakan MVP human-in-the-loop untuk membuat dataset
-training dari invoice:
+training dari invoice dan bukti transfer:
 
 1. upload invoice PDF/gambar,
 2. gambar bounding box pada field yang penting,
@@ -195,7 +195,11 @@ training dari invoice:
 7. approve annotation/document,
 8. export dataset approved.
 
-Label default yang tersedia di UI:
+Tombol `Auto Suggest` menjalankan OCR awal pada halaman aktif, lalu membuat
+bounding box draft untuk field yang terdeteksi. Hasil auto-suggest tetap harus
+direview karena ia berbasis heuristic dari teks OCR awal.
+
+Label invoice default yang tersedia di UI:
 
 - `invoice_number`
 - `invoice_date`
@@ -209,6 +213,22 @@ Label default yang tersedia di UI:
 - `currency`
 - `line_items`
 
+Label payment proof default yang tersedia di UI:
+
+- `transfer_status`
+- `amount`
+- `currency`
+- `transaction_date`
+- `transaction_time`
+- `source_bank`
+- `source_account`
+- `source_name`
+- `destination_bank`
+- `destination_account`
+- `destination_name`
+- `reference_number`
+- `channel`
+
 Storage default menggunakan file lokal di `data/annotations`. Pada Docker
 Compose, folder ini dipersist ke host melalui volume `./data:/app/data`.
 
@@ -219,10 +239,24 @@ curl -X POST http://localhost:8000/api/v1/training/invoices \
   -F "file=@invoice.pdf"
 ```
 
+Upload payment proof training:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/training/payments \
+  -F "file=@bukti-transfer.jpg"
+```
+
+Upload training document dengan route generik:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/training/documents/payment_proof \
+  -F "file=@bukti-transfer.jpg"
+```
+
 Simpan annotation:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/training/invoices/{invoice_id}/annotations \
+curl -X POST http://localhost:8000/api/v1/training/documents/{document_id}/annotations \
   -H "Content-Type: application/json" \
   -d '{
     "page": 1,
@@ -236,12 +270,23 @@ curl -X POST http://localhost:8000/api/v1/training/invoices/{invoice_id}/annotat
 OCR area crop:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/training/invoices/{invoice_id}/ocr-crop \
+curl -X POST http://localhost:8000/api/v1/training/documents/{document_id}/ocr-crop \
   -H "Content-Type: application/json" \
   -d '{
     "page": 1,
     "bbox": {"x": 812, "y": 143, "width": 210, "height": 42},
     "engine": "auto"
+  }'
+```
+
+Auto-suggest bounding box dari OCR awal:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/training/documents/{document_id}/auto-suggest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "page": 1,
+    "replace_existing_auto": true
   }'
 ```
 
@@ -256,11 +301,14 @@ Format dataset berisi dokumen, halaman render, dan annotation:
 ```json
 {
   "dataset_version": "dataset_20260909030000",
+  "document_count": 2,
   "invoice_count": 1,
-  "annotation_count": 1,
+  "payment_proof_count": 1,
+  "annotation_count": 2,
   "documents": [
     {
       "id": "invoice_id",
+      "document_type": "invoice",
       "pages": [
         {
           "page": 1,
@@ -274,6 +322,18 @@ Format dataset berisi dokumen, halaman render, dan annotation:
           "label": "invoice_number",
           "bbox": {"x": 812, "y": 143, "width": 210, "height": 42},
           "text": "INV-2026-0091",
+          "status": "approved"
+        }
+      ]
+    },
+    {
+      "id": "payment_id",
+      "document_type": "payment_proof",
+      "annotations": [
+        {
+          "label": "reference_number",
+          "bbox": {"x": 120, "y": 420, "width": 260, "height": 38},
+          "text": "TRX20260830123456",
           "status": "approved"
         }
       ]

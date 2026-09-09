@@ -20,6 +20,31 @@ class OCRText:
     fallback_used: bool = False
 
 
+@dataclass
+class OCRWord:
+    text: str
+    confidence: float
+    left: int
+    top: int
+    width: int
+    height: int
+    block_num: int
+    par_num: int
+    line_num: int
+    word_num: int
+
+
+@dataclass
+class OCRLineBox:
+    text: str
+    confidence: float
+    left: int
+    top: int
+    width: int
+    height: int
+    words: list[OCRWord]
+
+
 def preprocess_image(image: Image.Image) -> Image.Image:
     rgb = np.array(image.convert("RGB"))
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
@@ -79,12 +104,7 @@ class OCRService:
     def _run_tesseract(self, image: Image.Image) -> OCRText:
         prepared = preprocess_image(image)
 
-        data = pytesseract.image_to_data(
-            prepared,
-            lang=self.settings.tesseract_lang,
-            config="--oem 1 --psm 6",
-            output_type=pytesseract.Output.DICT,
-        )
+        data = self._tesseract_data(prepared)
 
         words: list[str] = []
         confidences: list[float] = []
@@ -122,6 +142,68 @@ class OCRService:
             lines=lines if lines else [" ".join(words)],
             confidence=max(0.0, min(1.0, confidence)),
             engine="tesseract",
+        )
+
+    def read_line_boxes(self, image: Image.Image) -> list[OCRLineBox]:
+        prepared = preprocess_image(image)
+        data = self._tesseract_data(prepared)
+        line_map: dict[tuple[int, int, int], list[OCRWord]] = {}
+
+        n = len(data.get("text", []))
+        for i in range(n):
+            text = (data["text"][i] or "").strip()
+            try:
+                raw_conf = float(data["conf"][i])
+            except (ValueError, TypeError):
+                raw_conf = -1
+
+            if not text:
+                continue
+
+            confidence = raw_conf / 100.0 if raw_conf >= 0 else 0.0
+            word = OCRWord(
+                text=text,
+                confidence=max(0.0, min(1.0, confidence)),
+                left=int(data["left"][i]),
+                top=int(data["top"][i]),
+                width=int(data["width"][i]),
+                height=int(data["height"][i]),
+                block_num=int(data["block_num"][i]),
+                par_num=int(data["par_num"][i]),
+                line_num=int(data["line_num"][i]),
+                word_num=int(data["word_num"][i]),
+            )
+            key = (word.block_num, word.par_num, word.line_num)
+            line_map.setdefault(key, []).append(word)
+
+        line_boxes: list[OCRLineBox] = []
+        for words in line_map.values():
+            words.sort(key=lambda word: word.word_num)
+            left = min(word.left for word in words)
+            top = min(word.top for word in words)
+            right = max(word.left + word.width for word in words)
+            bottom = max(word.top + word.height for word in words)
+            confidence = sum(word.confidence for word in words) / len(words)
+            line_boxes.append(
+                OCRLineBox(
+                    text=" ".join(word.text for word in words),
+                    confidence=confidence,
+                    left=left,
+                    top=top,
+                    width=right - left,
+                    height=bottom - top,
+                    words=words,
+                )
+            )
+
+        return sorted(line_boxes, key=lambda line: (line.top, line.left))
+
+    def _tesseract_data(self, image: Image.Image) -> dict:
+        return pytesseract.image_to_data(
+            image,
+            lang=self.settings.tesseract_lang,
+            config="--oem 1 --psm 6",
+            output_type=pytesseract.Output.DICT,
         )
 
     def read_image(

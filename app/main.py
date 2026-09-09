@@ -10,8 +10,12 @@ from app.schemas import (
     AnnotationDocument,
     AnnotationDocumentSummary,
     AnnotationStatus,
+    AutoSuggestRequest,
+    AutoSuggestResponse,
+    BoundingBox,
     AnalyzeResponse,
     DatasetExport,
+    DocumentType,
     HealthResponse,
     InvoiceAnnotation,
     InvoiceAnnotationCreate,
@@ -21,6 +25,7 @@ from app.schemas import (
     PaymentAnalyzeResponse,
     ReconciliationResponse,
 )
+from app.services.annotation_suggest import suggest_annotations
 from app.services.annotation_store import AnnotationStore
 from app.services.matcher import match_total
 from app.services.ocr import OCRService
@@ -49,6 +54,33 @@ ocr_service = OCRService(settings)
 annotation_store = AnnotationStore(settings)
 
 
+async def create_training_document(
+    *,
+    file: UploadFile,
+    document_type: DocumentType,
+) -> AnnotationDocument:
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    max_bytes = settings.max_file_mb * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File is larger than {settings.max_file_mb} MB",
+        )
+
+    try:
+        return annotation_store.create_document(
+            content=content,
+            filename=file.filename or document_type,
+            content_type=file.content_type,
+            document_type=document_type,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
     return HealthResponse(
@@ -72,25 +104,31 @@ def annotation_interface() -> HTMLResponse:
 async def create_training_invoice(
     file: Annotated[UploadFile, File(description="Invoice PDF/JPG/PNG/WEBP")],
 ) -> AnnotationDocument:
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    return await create_training_document(file=file, document_type="invoice")
 
-    max_bytes = settings.max_file_mb * 1024 * 1024
-    if len(content) > max_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File is larger than {settings.max_file_mb} MB",
-        )
 
-    try:
-        return annotation_store.create_document(
-            content=content,
-            filename=file.filename or "invoice",
-            content_type=file.content_type,
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+@app.post(
+    f"{settings.api_prefix}/training/payments",
+    response_model=AnnotationDocument,
+)
+async def create_training_payment_proof(
+    file: Annotated[
+        UploadFile,
+        File(description="Bukti transfer / payment receipt PDF/JPG/PNG/WEBP"),
+    ],
+) -> AnnotationDocument:
+    return await create_training_document(file=file, document_type="payment_proof")
+
+
+@app.post(
+    f"{settings.api_prefix}/training/documents/{{document_type}}",
+    response_model=AnnotationDocument,
+)
+async def create_training_document_by_type(
+    document_type: DocumentType,
+    file: Annotated[UploadFile, File(description="Invoice/payment PDF/JPG/PNG/WEBP")],
+) -> AnnotationDocument:
+    return await create_training_document(file=file, document_type=document_type)
 
 
 @app.get(
@@ -98,7 +136,25 @@ async def create_training_invoice(
     response_model=list[AnnotationDocumentSummary],
 )
 def list_training_invoices() -> list[AnnotationDocumentSummary]:
-    return annotation_store.list_documents()
+    return annotation_store.list_documents(document_type="invoice")
+
+
+@app.get(
+    f"{settings.api_prefix}/training/payments",
+    response_model=list[AnnotationDocumentSummary],
+)
+def list_training_payment_proofs() -> list[AnnotationDocumentSummary]:
+    return annotation_store.list_documents(document_type="payment_proof")
+
+
+@app.get(
+    f"{settings.api_prefix}/training/documents",
+    response_model=list[AnnotationDocumentSummary],
+)
+def list_training_documents(
+    document_type: DocumentType | None = None,
+) -> list[AnnotationDocumentSummary]:
+    return annotation_store.list_documents(document_type=document_type)
 
 
 @app.get(
@@ -110,6 +166,28 @@ def get_training_invoice(invoice_id: str) -> AnnotationDocument:
         return annotation_store.get_document(invoice_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Invoice not found") from exc
+
+
+@app.get(
+    f"{settings.api_prefix}/training/payments/{{payment_id}}",
+    response_model=AnnotationDocument,
+)
+def get_training_payment_proof(payment_id: str) -> AnnotationDocument:
+    try:
+        return annotation_store.get_document(payment_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Payment proof not found") from exc
+
+
+@app.get(
+    f"{settings.api_prefix}/training/documents/{{document_id}}",
+    response_model=AnnotationDocument,
+)
+def get_training_document(document_id: str) -> AnnotationDocument:
+    try:
+        return annotation_store.get_document(document_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Training document not found") from exc
 
 
 @app.patch(
@@ -126,9 +204,49 @@ def update_training_invoice_status(
         raise HTTPException(status_code=404, detail="Invoice not found") from exc
 
 
+@app.patch(
+    f"{settings.api_prefix}/training/payments/{{payment_id}}/status/{{status}}",
+    response_model=AnnotationDocument,
+)
+def update_training_payment_status(
+    payment_id: str,
+    status: AnnotationStatus,
+) -> AnnotationDocument:
+    try:
+        return annotation_store.update_document_status(payment_id, status)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Payment proof not found") from exc
+
+
+@app.patch(
+    f"{settings.api_prefix}/training/documents/{{document_id}}/status/{{status}}",
+    response_model=AnnotationDocument,
+)
+def update_training_document_status(
+    document_id: str,
+    status: AnnotationStatus,
+) -> AnnotationDocument:
+    try:
+        return annotation_store.update_document_status(document_id, status)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Training document not found") from exc
+
+
 @app.delete(f"{settings.api_prefix}/training/invoices/{{invoice_id}}")
 def delete_training_invoice(invoice_id: str) -> dict[str, str]:
     annotation_store.delete_document(invoice_id)
+    return {"status": "deleted"}
+
+
+@app.delete(f"{settings.api_prefix}/training/payments/{{payment_id}}")
+def delete_training_payment_proof(payment_id: str) -> dict[str, str]:
+    annotation_store.delete_document(payment_id)
+    return {"status": "deleted"}
+
+
+@app.delete(f"{settings.api_prefix}/training/documents/{{document_id}}")
+def delete_training_document(document_id: str) -> dict[str, str]:
+    annotation_store.delete_document(document_id)
     return {"status": "deleted"}
 
 
@@ -136,6 +254,24 @@ def delete_training_invoice(invoice_id: str) -> dict[str, str]:
 def get_training_invoice_page(invoice_id: str, page: int) -> FileResponse:
     try:
         path = annotation_store.page_image_path(invoice_id, page)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Page not found") from exc
+    return FileResponse(path, media_type="image/png")
+
+
+@app.get(f"{settings.api_prefix}/training/payments/{{payment_id}}/pages/{{page}}.png")
+def get_training_payment_page(payment_id: str, page: int) -> FileResponse:
+    try:
+        path = annotation_store.page_image_path(payment_id, page)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Page not found") from exc
+    return FileResponse(path, media_type="image/png")
+
+
+@app.get(f"{settings.api_prefix}/training/documents/{{document_id}}/pages/{{page}}.png")
+def get_training_document_page(document_id: str, page: int) -> FileResponse:
+    try:
+        path = annotation_store.page_image_path(document_id, page)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Page not found") from exc
     return FileResponse(path, media_type="image/png")
@@ -173,6 +309,124 @@ def ocr_training_crop(
 
 
 @app.post(
+    f"{settings.api_prefix}/training/payments/{{payment_id}}/ocr-crop",
+    response_model=OCRCropResponse,
+)
+def ocr_training_payment_crop(
+    payment_id: str,
+    payload: OCRCropRequest,
+) -> OCRCropResponse:
+    return ocr_training_crop(payment_id, payload)
+
+
+@app.post(
+    f"{settings.api_prefix}/training/documents/{{document_id}}/ocr-crop",
+    response_model=OCRCropResponse,
+)
+def ocr_training_document_crop(
+    document_id: str,
+    payload: OCRCropRequest,
+) -> OCRCropResponse:
+    return ocr_training_crop(document_id, payload)
+
+
+def create_auto_suggestions(
+    document_id: str,
+    payload: AutoSuggestRequest,
+) -> AutoSuggestResponse:
+    try:
+        document = annotation_store.get_document(document_id)
+        path = annotation_store.page_image_path(document_id, payload.page)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Training document not found") from exc
+
+    if payload.replace_existing_auto:
+        annotation_store.delete_auto_suggestions(document_id, payload.page)
+
+    image = Image.open(path).convert("RGB")
+    try:
+        line_boxes = ocr_service.read_line_boxes(image)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Initial OCR failed: {exc}") from exc
+
+    existing = annotation_store.get_document(document_id).annotations
+    existing_labels = {
+        annotation.label
+        for annotation in existing
+        if annotation.page == payload.page and annotation.source != "auto_suggest"
+    }
+    suggested_payloads = [
+        _clamp_annotation_to_page(suggestion, document)
+        for suggestion in suggest_annotations(
+            document_type=document.document_type,
+            page=payload.page,
+            line_boxes=line_boxes,
+        )
+        if suggestion.label not in existing_labels
+    ]
+
+    created: list[InvoiceAnnotation] = []
+    for suggestion in suggested_payloads:
+        created.append(annotation_store.add_annotation(document_id, suggestion))
+
+    return AutoSuggestResponse(created_count=len(created), annotations=created)
+
+
+def _clamp_annotation_to_page(
+    suggestion: InvoiceAnnotationCreate,
+    document: AnnotationDocument,
+) -> InvoiceAnnotationCreate:
+    page = next(page for page in document.pages if page.page == suggestion.page)
+    x = min(max(0, suggestion.bbox.x), page.width - 1)
+    y = min(max(0, suggestion.bbox.y), page.height - 1)
+    width = min(suggestion.bbox.width, page.width - x)
+    height = min(suggestion.bbox.height, page.height - y)
+    return suggestion.model_copy(
+        update={
+            "bbox": BoundingBox(
+                x=x,
+                y=y,
+                width=max(1, width),
+                height=max(1, height),
+            )
+        }
+    )
+
+
+@app.post(
+    f"{settings.api_prefix}/training/invoices/{{invoice_id}}/auto-suggest",
+    response_model=AutoSuggestResponse,
+)
+def auto_suggest_training_invoice(
+    invoice_id: str,
+    payload: AutoSuggestRequest,
+) -> AutoSuggestResponse:
+    return create_auto_suggestions(invoice_id, payload)
+
+
+@app.post(
+    f"{settings.api_prefix}/training/payments/{{payment_id}}/auto-suggest",
+    response_model=AutoSuggestResponse,
+)
+def auto_suggest_training_payment(
+    payment_id: str,
+    payload: AutoSuggestRequest,
+) -> AutoSuggestResponse:
+    return create_auto_suggestions(payment_id, payload)
+
+
+@app.post(
+    f"{settings.api_prefix}/training/documents/{{document_id}}/auto-suggest",
+    response_model=AutoSuggestResponse,
+)
+def auto_suggest_training_document(
+    document_id: str,
+    payload: AutoSuggestRequest,
+) -> AutoSuggestResponse:
+    return create_auto_suggestions(document_id, payload)
+
+
+@app.post(
     f"{settings.api_prefix}/training/invoices/{{invoice_id}}/annotations",
     response_model=InvoiceAnnotation,
 )
@@ -186,6 +440,28 @@ def create_training_annotation(
         raise HTTPException(status_code=404, detail="Invoice not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    f"{settings.api_prefix}/training/payments/{{payment_id}}/annotations",
+    response_model=InvoiceAnnotation,
+)
+def create_training_payment_annotation(
+    payment_id: str,
+    payload: InvoiceAnnotationCreate,
+) -> InvoiceAnnotation:
+    return create_training_annotation(payment_id, payload)
+
+
+@app.post(
+    f"{settings.api_prefix}/training/documents/{{document_id}}/annotations",
+    response_model=InvoiceAnnotation,
+)
+def create_training_document_annotation(
+    document_id: str,
+    payload: InvoiceAnnotationCreate,
+) -> InvoiceAnnotation:
+    return create_training_annotation(document_id, payload)
 
 
 @app.patch(
@@ -207,6 +483,30 @@ def update_training_annotation(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.patch(
+    f"{settings.api_prefix}/training/payments/{{payment_id}}/annotations/{{annotation_id}}",
+    response_model=InvoiceAnnotation,
+)
+def update_training_payment_annotation(
+    payment_id: str,
+    annotation_id: str,
+    payload: InvoiceAnnotationUpdate,
+) -> InvoiceAnnotation:
+    return update_training_annotation(payment_id, annotation_id, payload)
+
+
+@app.patch(
+    f"{settings.api_prefix}/training/documents/{{document_id}}/annotations/{{annotation_id}}",
+    response_model=InvoiceAnnotation,
+)
+def update_training_document_annotation(
+    document_id: str,
+    annotation_id: str,
+    payload: InvoiceAnnotationUpdate,
+) -> InvoiceAnnotation:
+    return update_training_annotation(document_id, annotation_id, payload)
+
+
 @app.delete(
     f"{settings.api_prefix}/training/invoices/{{invoice_id}}/annotations/{{annotation_id}}"
 )
@@ -221,6 +521,26 @@ def delete_training_annotation(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Annotation not found") from exc
     return {"status": "deleted"}
+
+
+@app.delete(
+    f"{settings.api_prefix}/training/payments/{{payment_id}}/annotations/{{annotation_id}}"
+)
+def delete_training_payment_annotation(
+    payment_id: str,
+    annotation_id: str,
+) -> dict[str, str]:
+    return delete_training_annotation(payment_id, annotation_id)
+
+
+@app.delete(
+    f"{settings.api_prefix}/training/documents/{{document_id}}/annotations/{{annotation_id}}"
+)
+def delete_training_document_annotation(
+    document_id: str,
+    annotation_id: str,
+) -> dict[str, str]:
+    return delete_training_annotation(document_id, annotation_id)
 
 
 @app.get(

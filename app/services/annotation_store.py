@@ -18,6 +18,7 @@ from app.schemas import (
     AnnotationPage,
     BoundingBox,
     DatasetExport,
+    DocumentType,
     InvoiceAnnotation,
     InvoiceAnnotationCreate,
     InvoiceAnnotationUpdate,
@@ -40,9 +41,10 @@ class AnnotationStore:
         content: bytes,
         filename: str,
         content_type: str | None,
+        document_type: DocumentType = "invoice",
     ) -> AnnotationDocument:
-        invoice_id = uuid4().hex
-        doc_dir = self._doc_dir(invoice_id)
+        document_id = uuid4().hex
+        doc_dir = self._doc_dir(document_id)
         pages_dir = doc_dir / "pages"
         pages_dir.mkdir(parents=True, exist_ok=True)
 
@@ -59,7 +61,8 @@ class AnnotationStore:
 
         created_at = now_iso()
         document = AnnotationDocument(
-            id=invoice_id,
+            id=document_id,
+            document_type=document_type,
             filename=filename,
             content_type=content_type,
             size_bytes=len(content),
@@ -73,7 +76,7 @@ class AnnotationStore:
                     page=page.page,
                     width=page.width,
                     height=page.height,
-                    image_url=f"/api/v1/training/invoices/{invoice_id}/pages/{page.page}.png",
+                    image_url=f"/api/v1/training/documents/{document_id}/pages/{page.page}.png",
                 )
                 for page in pages
             ],
@@ -82,14 +85,20 @@ class AnnotationStore:
         self._save_document(document)
         return document
 
-    def list_documents(self) -> list[AnnotationDocumentSummary]:
+    def list_documents(
+        self,
+        document_type: DocumentType | None = None,
+    ) -> list[AnnotationDocumentSummary]:
         summaries: list[AnnotationDocumentSummary] = []
         for metadata_path in sorted(self.root.glob("*/metadata.json")):
             document = self._read_document(metadata_path.parent.name)
+            if document_type is not None and document.document_type != document_type:
+                continue
             approved = sum(1 for ann in document.annotations if ann.status == "approved")
             summaries.append(
                 AnnotationDocumentSummary(
                     id=document.id,
+                    document_type=document.document_type,
                     filename=document.filename,
                     content_type=document.content_type,
                     size_bytes=document.size_bytes,
@@ -144,6 +153,8 @@ class AnnotationStore:
             label=payload.label,
             bbox=payload.bbox,
             text=payload.text,
+            confidence=payload.confidence,
+            engine=payload.engine,
             source=payload.source,
             status=payload.status,
             created_at=timestamp,
@@ -193,9 +204,21 @@ class AnnotationStore:
         document.updated_at = now_iso()
         self._save_document(document)
 
+    def delete_auto_suggestions(self, invoice_id: str, page: int) -> None:
+        document = self._read_document(invoice_id)
+        document.annotations = [
+            annotation
+            for annotation in document.annotations
+            if not (annotation.page == page and annotation.source == "auto_suggest")
+        ]
+        document.updated_at = now_iso()
+        self._save_document(document)
+
     def export_dataset(self, approved_only: bool = True) -> DatasetExport:
         documents: list[AnnotationDocument] = []
         annotation_count = 0
+        invoice_count = 0
+        payment_proof_count = 0
         for summary in self.list_documents():
             document = self._read_document(summary.id)
             if approved_only:
@@ -206,13 +229,19 @@ class AnnotationStore:
                 ]
             if not document.annotations:
                 continue
+            if document.document_type == "invoice":
+                invoice_count += 1
+            elif document.document_type == "payment_proof":
+                payment_proof_count += 1
             annotation_count += len(document.annotations)
             documents.append(document)
 
         return DatasetExport(
             dataset_version=f"dataset_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
             generated_at=now_iso(),
-            invoice_count=len(documents),
+            document_count=len(documents),
+            invoice_count=invoice_count,
+            payment_proof_count=payment_proof_count,
             annotation_count=annotation_count,
             documents=documents,
         )

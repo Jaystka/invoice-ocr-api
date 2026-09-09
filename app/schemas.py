@@ -141,6 +141,7 @@ class HealthResponse(BaseModel):
 
 
 AnnotationStatus = Literal["draft", "reviewed", "approved", "rejected"]
+DocumentType = Literal["invoice", "payment_proof"]
 
 
 class BoundingBox(BaseModel):
@@ -170,6 +171,8 @@ class InvoiceAnnotationCreate(BaseModel):
     label: str
     bbox: BoundingBox
     text: str | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    engine: str | None = None
     source: Literal["manual", "ocr_crop", "auto_suggest"] = "manual"
     status: AnnotationStatus = "draft"
 
@@ -199,6 +202,16 @@ class OCRCropResponse(BaseModel):
     fallback_used: bool = False
 
 
+class AutoSuggestRequest(BaseModel):
+    page: int = Field(ge=1)
+    replace_existing_auto: bool = False
+
+
+class AutoSuggestResponse(BaseModel):
+    created_count: int
+    annotations: list[InvoiceAnnotation]
+
+
 class AnnotationPage(BaseModel):
     page: int
     width: int
@@ -208,6 +221,7 @@ class AnnotationPage(BaseModel):
 
 class AnnotationDocument(BaseModel):
     id: str
+    document_type: DocumentType = "invoice"
     filename: str
     content_type: str | None = None
     size_bytes: int
@@ -222,6 +236,7 @@ class AnnotationDocument(BaseModel):
 
 class AnnotationDocumentSummary(BaseModel):
     id: str
+    document_type: DocumentType = "invoice"
     filename: str
     content_type: str | None = None
     size_bytes: int
@@ -237,6 +252,8 @@ class AnnotationDocumentSummary(BaseModel):
 class DatasetExport(BaseModel):
     dataset_version: str
     generated_at: str
+    document_count: int
     invoice_count: int
+    payment_proof_count: int
     annotation_count: int
     documents: list[AnnotationDocument]

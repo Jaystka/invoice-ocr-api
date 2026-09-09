@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Invoice OCR Training</title>
+  <title>OCR Training</title>
   <style>
     :root {
       color-scheme: light;
@@ -290,8 +290,15 @@
   <main class="app">
     <aside class="sidebar">
       <section class="section">
-        <h1 class="section-title">Training Invoices</h1>
+        <h1 class="section-title">OCR Training</h1>
         <form id="uploadForm" class="section">
+          <label>
+            Document Type
+            <select id="documentTypeSelect">
+              <option value="invoice">Invoice</option>
+              <option value="payment_proof">Payment Proof</option>
+            </select>
+          </label>
           <input id="fileInput" type="file" accept=".pdf,image/*" required>
           <button class="primary" type="submit">Upload</button>
         </form>
@@ -316,12 +323,13 @@
         <span id="zoomInfo" class="muted">100%</span>
         <button id="zoomIn" type="button">+</button>
         <button id="fitWidth" type="button">Fit</button>
+        <button id="autoSuggestButton" type="button">Auto Suggest</button>
         <span id="statusText" class="muted"></span>
       </div>
       <div class="canvas-wrap" id="canvasWrap">
-        <div id="emptyState" class="empty">Upload atau pilih invoice untuk mulai annotation.</div>
+        <div id="emptyState" class="empty">Upload atau pilih dokumen untuk mulai annotation.</div>
         <div id="stage" class="stage hidden">
-          <img id="pageImage" alt="Invoice page">
+          <img id="pageImage" alt="Document page">
           <canvas id="overlay"></canvas>
         </div>
       </div>
@@ -384,9 +392,41 @@
 
   <script>
     const api = "/api/v1";
+    const labelsByDocumentType = {
+      invoice: [
+        "invoice_number",
+        "invoice_date",
+        "vendor_name",
+        "tax_number",
+        "subtotal",
+        "tax_amount",
+        "discount",
+        "total_amount",
+        "due_date",
+        "currency",
+        "line_items"
+      ],
+      payment_proof: [
+        "transfer_status",
+        "amount",
+        "currency",
+        "transaction_date",
+        "transaction_time",
+        "source_bank",
+        "source_account",
+        "source_name",
+        "destination_bank",
+        "destination_account",
+        "destination_name",
+        "reference_number",
+        "channel"
+      ]
+    };
+
     const state = {
       documents: [],
       currentDoc: null,
+      documentType: "invoice",
       currentPage: 1,
       selectedAnnotationId: null,
       draftBox: null,
@@ -396,6 +436,7 @@
 
     const els = {
       uploadForm: document.getElementById("uploadForm"),
+      documentTypeSelect: document.getElementById("documentTypeSelect"),
       fileInput: document.getElementById("fileInput"),
       refreshButton: document.getElementById("refreshButton"),
       exportButton: document.getElementById("exportButton"),
@@ -408,6 +449,7 @@
       zoomOut: document.getElementById("zoomOut"),
       zoomIn: document.getElementById("zoomIn"),
       fitWidth: document.getElementById("fitWidth"),
+      autoSuggestButton: document.getElementById("autoSuggestButton"),
       canvasWrap: document.getElementById("canvasWrap"),
       emptyState: document.getElementById("emptyState"),
       stage: document.getElementById("stage"),
@@ -441,12 +483,15 @@
     }
 
     async function loadDocuments() {
-      state.documents = await request(`${api}/training/invoices`);
+      state.documents = await request(`${api}/training/documents?document_type=${state.documentType}`);
       renderDocuments();
     }
 
     async function loadDocument(invoiceId) {
-      state.currentDoc = await request(`${api}/training/invoices/${invoiceId}`);
+      state.currentDoc = await request(`${api}/training/documents/${invoiceId}`);
+      state.documentType = state.currentDoc.document_type || "invoice";
+      els.documentTypeSelect.value = state.documentType;
+      renderLabelOptions();
       state.currentPage = 1;
       state.selectedAnnotationId = null;
       state.draftBox = null;
@@ -456,9 +501,28 @@
       syncForm();
     }
 
+    async function reloadCurrentDocument() {
+      if (!state.currentDoc) return;
+      const page = state.currentPage;
+      const selected = state.selectedAnnotationId;
+      state.currentDoc = await request(`${api}/training/documents/${state.currentDoc.id}`);
+      state.documentType = state.currentDoc.document_type || "invoice";
+      els.documentTypeSelect.value = state.documentType;
+      renderLabelOptions();
+      state.currentPage = Math.min(page, state.currentDoc.page_count);
+      state.selectedAnnotationId = selected;
+      if (!selectedAnnotation()) {
+        state.selectedAnnotationId = null;
+      }
+      renderDocuments();
+      renderCurrentPage();
+      renderAnnotations();
+      syncForm();
+    }
+
     function renderDocuments() {
       if (!state.documents.length) {
-        els.docList.innerHTML = `<div class="empty">Belum ada invoice training.</div>`;
+        els.docList.innerHTML = `<div class="empty">Belum ada dokumen training.</div>`;
         return;
       }
 
@@ -467,6 +531,7 @@
           <span class="item-title">${escapeHtml(doc.filename)}</span>
           <span class="muted">${doc.page_count} page | ${doc.annotation_count} boxes</span>
           <span class="pill-row">
+            <span class="pill">${doc.document_type || "invoice"}</span>
             <span class="pill ${doc.status}">${doc.status}</span>
             <span class="pill">${doc.approved_annotation_count} approved</span>
           </span>
@@ -539,6 +604,13 @@
       return (state.currentDoc?.annotations || []).find(annotation => annotation.id === state.selectedAnnotationId) || null;
     }
 
+    function renderLabelOptions() {
+      const previous = els.labelSelect.value;
+      const labels = labelsByDocumentType[state.documentType] || labelsByDocumentType.invoice;
+      els.labelSelect.innerHTML = labels.map(label => `<option value="${label}">${label}</option>`).join("");
+      els.labelSelect.value = labels.includes(previous) ? previous : labels[0];
+    }
+
     function selectAnnotation(annotationId) {
       state.selectedAnnotationId = annotationId;
       const annotation = selectedAnnotation();
@@ -551,6 +623,12 @@
     function syncForm() {
       const annotation = selectedAnnotation();
       const box = annotation?.bbox || state.draftBox || { x: 0, y: 0, width: 1, height: 1 };
+      if (annotation?.label) {
+        const labels = labelsByDocumentType[state.documentType] || [];
+        if (!labels.includes(annotation.label)) {
+          els.labelSelect.insertAdjacentHTML("beforeend", `<option value="${escapeHtml(annotation.label)}">${escapeHtml(annotation.label)}</option>`);
+        }
+      }
       els.bboxX.value = Math.round(box.x);
       els.bboxY.value = Math.round(box.y);
       els.bboxW.value = Math.round(box.width);
@@ -625,13 +703,13 @@
       };
 
       if (state.selectedAnnotationId) {
-        await request(`${api}/training/invoices/${state.currentDoc.id}/annotations/${state.selectedAnnotationId}`, {
+        await request(`${api}/training/documents/${state.currentDoc.id}/annotations/${state.selectedAnnotationId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
         });
       } else {
-        const created = await request(`${api}/training/invoices/${state.currentDoc.id}/annotations`, {
+        const created = await request(`${api}/training/documents/${state.currentDoc.id}/annotations`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload)
@@ -646,7 +724,7 @@
     async function ocrCrop() {
       if (!state.currentDoc || !state.draftBox) return;
       setStatus("Running OCR crop...");
-      const result = await request(`${api}/training/invoices/${state.currentDoc.id}/ocr-crop`, {
+      const result = await request(`${api}/training/documents/${state.currentDoc.id}/ocr-crop`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -675,7 +753,7 @@
       const data = new FormData();
       data.append("file", file);
       setStatus("Uploading...");
-      const doc = await request(`${api}/training/invoices`, {
+      const doc = await request(`${api}/training/documents/${state.documentType}`, {
         method: "POST",
         body: data
       });
@@ -683,6 +761,18 @@
       await loadDocuments();
       await loadDocument(doc.id);
       setStatus("Uploaded");
+    });
+
+    els.documentTypeSelect.addEventListener("change", async () => {
+      state.documentType = els.documentTypeSelect.value;
+      state.currentDoc = null;
+      state.currentPage = 1;
+      state.selectedAnnotationId = null;
+      state.draftBox = null;
+      renderLabelOptions();
+      renderCurrentPage();
+      renderAnnotations();
+      await loadDocuments();
     });
 
     els.refreshButton.addEventListener("click", loadDocuments);
@@ -727,6 +817,25 @@
       applyZoom();
     });
 
+    els.autoSuggestButton.addEventListener("click", async () => {
+      if (!state.currentDoc) return;
+      try {
+        setStatus("Running initial OCR...");
+        const result = await request(`${api}/training/documents/${state.currentDoc.id}/auto-suggest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            page: state.currentPage,
+            replace_existing_auto: true
+          })
+        });
+        await reloadCurrentDocument();
+        setStatus(`Auto-suggest created ${result.created_count} boxes`);
+      } catch (error) {
+        setStatus(error.message);
+      }
+    });
+
     els.overlay.addEventListener("mousedown", event => {
       if (!state.currentDoc) return;
       const point = canvasPoint(event);
@@ -763,7 +872,7 @@
 
     els.deleteAnnotationButton.addEventListener("click", async () => {
       if (!state.currentDoc || !state.selectedAnnotationId) return;
-      await request(`${api}/training/invoices/${state.currentDoc.id}/annotations/${state.selectedAnnotationId}`, {
+      await request(`${api}/training/documents/${state.currentDoc.id}/annotations/${state.selectedAnnotationId}`, {
         method: "DELETE"
       });
       const invoiceId = state.currentDoc.id;
@@ -775,7 +884,7 @@
 
     els.approveDocumentButton.addEventListener("click", async () => {
       if (!state.currentDoc) return;
-      await request(`${api}/training/invoices/${state.currentDoc.id}/status/approved`, {
+      await request(`${api}/training/documents/${state.currentDoc.id}/status/approved`, {
         method: "PATCH"
       });
       await loadDocuments();
@@ -783,6 +892,7 @@
       setStatus("Document approved");
     });
 
+    renderLabelOptions();
     loadDocuments().catch(error => setStatus(error.message));
   </script>
 </body>
