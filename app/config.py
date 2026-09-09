@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     pdf_dpi: int = 200
     digital_pdf_min_chars: int = 40
     annotation_storage_dir: str = "data/annotations"
+    training_command: str | None = None
 
     default_engine: str = "auto"
     paddle_lang: str = "id"

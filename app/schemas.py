@@ -257,3 +257,37 @@ class DatasetExport(BaseModel):
     payment_proof_count: int
     annotation_count: int
     documents: list[AnnotationDocument]
+
+
+TrainingJobStatus = Literal["queued", "running", "completed", "failed"]
+ModelVersionStatus = Literal["staging", "production", "archived", "failed"]
+
+
+class TrainingJobCreate(BaseModel):
+    approved_only: bool = True
+    notes: str | None = None
+
+
+class TrainingJob(BaseModel):
+    id: str
+    status: TrainingJobStatus
+    dataset_version: str
+    dataset_path: str
+    model_id: str | None = None
+    error: str | None = None
+    notes: str | None = None
+    created_at: str
+    updated_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+
+
+class ModelVersion(BaseModel):
+    id: str
+    status: ModelVersionStatus
+    training_job_id: str
+    dataset_version: str
+    artifact_path: str
+    metrics: dict[str, float | int | str]
+    created_at: str
+    updated_at: str

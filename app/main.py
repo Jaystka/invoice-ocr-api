@@ -20,10 +20,13 @@ from app.schemas import (
     InvoiceAnnotation,
     InvoiceAnnotationCreate,
     InvoiceAnnotationUpdate,
+    ModelVersion,
     OCRCropRequest,
     OCRCropResponse,
     PaymentAnalyzeResponse,
     ReconciliationResponse,
+    TrainingJob,
+    TrainingJobCreate,
 )
 from app.services.annotation_suggest import suggest_annotations
 from app.services.annotation_store import AnnotationStore
@@ -35,6 +38,7 @@ from app.services.payment_validator import (
     validate_payment,
 )
 from app.services.pipeline import extract_document
+from app.services.training_store import TrainingStore
 from app.services.transfer_parser import parse_transfer_proof
 
 
@@ -52,6 +56,7 @@ app = FastAPI(
 
 ocr_service = OCRService(settings)
 annotation_store = AnnotationStore(settings)
+training_store = TrainingStore(settings)
 
 
 async def create_training_document(
@@ -551,6 +556,73 @@ def export_training_dataset(
     approved_only: bool = True,
 ) -> DatasetExport:
     return annotation_store.export_dataset(approved_only=approved_only)
+
+
+@app.post(
+    f"{settings.api_prefix}/training/jobs",
+    response_model=TrainingJob,
+)
+def create_training_job(
+    payload: TrainingJobCreate | None = None,
+) -> TrainingJob:
+    payload = payload or TrainingJobCreate()
+    dataset = annotation_store.export_dataset(approved_only=payload.approved_only)
+    try:
+        job = training_store.create_job(dataset=dataset, notes=payload.notes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    training_store.start_background_job(job.id)
+    return job
+
+
+@app.get(
+    f"{settings.api_prefix}/training/jobs",
+    response_model=list[TrainingJob],
+)
+def list_training_jobs() -> list[TrainingJob]:
+    return training_store.list_jobs()
+
+
+@app.get(
+    f"{settings.api_prefix}/training/jobs/{{job_id}}",
+    response_model=TrainingJob,
+)
+def get_training_job(job_id: str) -> TrainingJob:
+    try:
+        return training_store.get_job(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Training job not found") from exc
+
+
+@app.get(
+    f"{settings.api_prefix}/training/models",
+    response_model=list[ModelVersion],
+)
+def list_training_models() -> list[ModelVersion]:
+    return training_store.list_models()
+
+
+@app.get(
+    f"{settings.api_prefix}/training/models/{{model_id}}",
+    response_model=ModelVersion,
+)
+def get_training_model(model_id: str) -> ModelVersion:
+    try:
+        return training_store.get_model(model_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Model version not found") from exc
+
+
+@app.post(
+    f"{settings.api_prefix}/training/models/{{model_id}}/promote",
+    response_model=ModelVersion,
+)
+def promote_training_model(model_id: str) -> ModelVersion:
+    try:
+        return training_store.promote_model(model_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Model version not found") from exc
 
 
 @app.post(

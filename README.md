@@ -296,6 +296,52 @@ Export dataset:
 curl "http://localhost:8000/api/v1/training/dataset/export?approved_only=true"
 ```
 
+Train model dari annotation approved:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/training/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "approved_only": true,
+    "notes": "manual training run"
+  }'
+```
+
+Cek status training job:
+
+```bash
+curl http://localhost:8000/api/v1/training/jobs/{job_id}
+```
+
+List model version:
+
+```bash
+curl http://localhost:8000/api/v1/training/models
+```
+
+Promote model ke production:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/training/models/{model_id}/promote
+```
+
+MVP training saat ini membuat dataset snapshot dan model artifact metadata di
+`data/annotations/training`. Ini menyiapkan job lifecycle, dataset versioning,
+dan model registry.
+
+Untuk menjalankan training model sebenarnya, isi `INVOICE_TRAINING_COMMAND`.
+Command ini bisa memakai placeholder:
+
+- `{dataset_path}`
+- `{artifact_path}`
+- `{model_id}`
+
+Contoh:
+
+```env
+INVOICE_TRAINING_COMMAND=python scripts/train_detector.py --dataset {dataset_path} --out {artifact_path} --model-id {model_id}
+```
+
 Format dataset berisi dokumen, halaman render, dan annotation:
 
 ```json

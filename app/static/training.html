@@ -309,8 +309,17 @@
         <div class="action-row">
           <h2 class="section-title">Queue</h2>
           <button id="exportButton" type="button">Export</button>
+          <button id="trainButton" class="primary" type="button">Train Model</button>
         </div>
         <div id="docList" class="list"></div>
+      </section>
+
+      <section class="section">
+        <div class="action-row">
+          <h2 class="section-title">Training Jobs</h2>
+          <button id="refreshJobsButton" type="button">Refresh</button>
+        </div>
+        <div id="jobList" class="list"></div>
       </section>
     </aside>
 
@@ -440,7 +449,10 @@
       fileInput: document.getElementById("fileInput"),
       refreshButton: document.getElementById("refreshButton"),
       exportButton: document.getElementById("exportButton"),
+      trainButton: document.getElementById("trainButton"),
+      refreshJobsButton: document.getElementById("refreshJobsButton"),
       docList: document.getElementById("docList"),
+      jobList: document.getElementById("jobList"),
       pageInfo: document.getElementById("pageInfo"),
       zoomInfo: document.getElementById("zoomInfo"),
       statusText: document.getElementById("statusText"),
@@ -485,6 +497,11 @@
     async function loadDocuments() {
       state.documents = await request(`${api}/training/documents?document_type=${state.documentType}`);
       renderDocuments();
+    }
+
+    async function loadJobs() {
+      const jobs = await request(`${api}/training/jobs`);
+      renderJobs(jobs);
     }
 
     async function loadDocument(invoiceId) {
@@ -541,6 +558,24 @@
       els.docList.querySelectorAll("[data-doc-id]").forEach(button => {
         button.addEventListener("click", () => loadDocument(button.dataset.docId));
       });
+    }
+
+    function renderJobs(jobs) {
+      if (!jobs.length) {
+        els.jobList.innerHTML = `<div class="empty">Belum ada training job.</div>`;
+        return;
+      }
+
+      els.jobList.innerHTML = jobs.slice(0, 5).map(job => `
+        <div class="annotation-item">
+          <span class="item-title">${escapeHtml(job.dataset_version)}</span>
+          <span class="muted">${escapeHtml(job.model_id || job.id)}</span>
+          <span class="pill-row">
+            <span class="pill ${job.status === "failed" ? "rejected" : job.status === "completed" ? "approved" : "reviewed"}">${job.status}</span>
+            ${job.model_id ? `<span class="pill">model ready</span>` : ""}
+          </span>
+        </div>
+      `).join("");
     }
 
     function renderCurrentPage() {
@@ -776,8 +811,28 @@
     });
 
     els.refreshButton.addEventListener("click", loadDocuments);
+    els.refreshJobsButton.addEventListener("click", () => loadJobs().catch(error => setStatus(error.message)));
     els.exportButton.addEventListener("click", () => {
       window.open(`${api}/training/dataset/export?approved_only=true`, "_blank");
+    });
+
+    els.trainButton.addEventListener("click", async () => {
+      try {
+        setStatus("Creating training job...");
+        const job = await request(`${api}/training/jobs`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            approved_only: true,
+            notes: "Triggered from /training UI"
+          })
+        });
+        await loadJobs();
+        setStatus(`Training job queued: ${job.id}`);
+        pollJob(job.id);
+      } catch (error) {
+        setStatus(error.message);
+      }
     });
 
     els.prevPage.addEventListener("click", () => {
@@ -894,6 +949,24 @@
 
     renderLabelOptions();
     loadDocuments().catch(error => setStatus(error.message));
+    loadJobs().catch(error => setStatus(error.message));
+
+    async function pollJob(jobId) {
+      for (let i = 0; i < 20; i += 1) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const job = await request(`${api}/training/jobs/${jobId}`);
+        await loadJobs();
+        if (job.status === "completed") {
+          setStatus(`Training completed: ${job.model_id}`);
+          return;
+        }
+        if (job.status === "failed") {
+          setStatus(`Training failed: ${job.error || "unknown error"}`);
+          return;
+        }
+        setStatus(`Training ${job.status}...`);
+      }
+    }
   </script>
 </body>
 </html>
